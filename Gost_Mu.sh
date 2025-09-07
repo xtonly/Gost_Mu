@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #================================================================
-# Gost V3 All-in-One Helper Script (Ultimate Version)
+# Gost V3 All-in-One Helper Script (Final Fixed Version)
 # Repository: https://github.com/go-gost/gost
 # Features: Bilingual, Smart Downloader (API -> Proxy -> Manual),
-#           Robust installation, Systemd service creation.
+#           Typo-fixed, Systemd service creation.
 #================================================================
 
 # --- Script configuration ---
@@ -77,7 +77,7 @@ EN_UNINSTALL_DONE="Gost has been uninstalled."
 EN_UNINSTALL_CANCELLED="Uninstallation cancelled."
 EN_ERR_FETCH_VERSION_FINAL="All automatic download methods have failed. This might be due to severe network restrictions."
 EN_ERR_DOWNLOAD_INVALID="Download failed or the downloaded file is invalid."
-EN_MANUAL_DOWNLOAD_PROMPT="Please go to https://github.com/go-gost/gost/releases/latest, copy the URL for the 'linux-${ARCH}.*.tgz' file, and paste it here (or leave empty to abort):"
+EN_MANUAL_DOWNLOAD_PROMPT="Please go to https://github.com/go-gost/gost/releases/latest, copy the URL for the 'linux-${ARCH}.*.tar.gz' file, and paste it here (or leave empty to abort):"
 EN_DEP_MISSING="Error: Command '${CMD}' is not installed. Please install it first."
 
 # Chinese
@@ -135,7 +135,7 @@ ZH_UNINSTALL_DONE="Gost 已被卸载。"
 ZH_UNINSTALL_CANCELLED="已取消卸载。"
 ZH_ERR_FETCH_VERSION_FINAL="所有自动下载方式均失败，可能是由于网络限制非常严格。"
 ZH_ERR_DOWNLOAD_INVALID="下载失败或下载的文件无效。"
-ZH_MANUAL_DOWNLOAD_PROMPT="请前往 https://github.com/go-gost/gost/releases/latest, 复制 'linux-${ARCH}.*.tgz' 文件的链接并粘贴到此处 (留空则中止):"
+ZH_MANUAL_DOWNLOAD_PROMPT="请前往 https://github.com/go-gost/gost/releases/latest, 复制 'linux-${ARCH}.*.tar.gz' 文件的链接并粘贴到此处 (留空则中止):"
 ZH_DEP_MISSING="错误: 未安装 '${CMD}' 命令，请先安装它。"
 
 # --- Helper Functions ---
@@ -169,13 +169,14 @@ install_gost() {
     # Attempt 1: GitHub Official API
     echo -e "${C_YELLOW}$(lang_get 'FETCHING_LATEST')${C_NC}"
     local api_response=$(curl -sSL --connect-timeout 10 "$GITHUB_API_URL")
-    local download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
+    # Updated grep to handle formats like amd64v3.tar.gz
+    local download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tar.gz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
     
     # Attempt 2: Proxy Fallback
     if [ -z "$download_url" ]; then
         echo -e "${C_YELLOW}$(lang_get 'FETCHING_LATEST_PROXY')${C_NC}"
         api_response=$(curl -sSL --connect-timeout 15 "$DOWNLOAD_PROXY_URL")
-        download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
+        download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tar.gz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
     fi
 
     # Attempt 3: Manual Fallback
@@ -192,7 +193,7 @@ install_gost() {
     echo -e "${C_GREEN}$(lang_get 'DOWNLOAD_URL_FOUND')${C_NC}"
     echo "$download_url"
     
-    local temp_file="/tmp/gost.tgz"
+    local temp_file="/tmp/gost.tar.gz"
     if ! curl -sSL -o "$temp_file" "$download_url"; then
         echo -e "${C_RED}$(lang_get 'DOWNLOAD_FAILED')${C_NC}"
         exit 1
@@ -204,14 +205,20 @@ install_gost() {
         exit 1
     fi
     
-    tar -zxf "$temp_file" -C /tmp
-    find /tmp -name "gost-linux-${ARCH}*" -exec mv {} "$GOST_EXEC_PATH" \;
-    chmod +x "$GOST_EXEC_PATH"
-    rm -rf "$temp_file" /tmp/gost-linux-*
+    # The new release format might not have a sub-directory, so we extract to a specific dir to be safe
+    local extract_dir="/tmp/gost_extract"
+    mkdir -p "$extract_dir"
+    tar -zxf "$temp_file" -C "$extract_dir"
+    # Find the executable regardless of sub-directory
+    local gost_executable=$(find "$extract_dir" -type f -name "gost")
     
-    if [ -f "$GOST_EXEC_PATH" ]; then
+    if [ -n "$gost_executable" ]; then
+        mv "$gost_executable" "$GOST_EXEC_PATH"
+        chmod +x "$GOST_EXEC_PATH"
+        rm -rf "$temp_file" "$extract_dir"
         echo -e "${C_GREEN}$(lang_get 'INSTALL_SUCCESS')${C_NC}"
     else
+        rm -rf "$temp_file" "$extract_dir"
         echo -e "${C_RED}$(lang_get 'INSTALL_FAILED')${C_NC}"
         exit 1
     fi
@@ -244,7 +251,7 @@ EOF
     echo -e "${C_YELLOW}$(lang_get 'SYSTEMD_MANAGE')${C_NC}"
 }
 
-# --- Menu Functions and Main Execution (No changes below this line) ---
+# --- Menu Functions and Main Execution ---
 configure_server() {
     echo -e "${C_BLUE}$(lang_get 'CONFIG_SERVER_TITLE')${C_NC}"
     install_gost
@@ -380,13 +387,13 @@ show_menu() {
     echo -e "${C_GREEN}6. $(lang_get 'MENU_LOG')${C_NC}"
     echo ""
     echo -e "${C_RED}7. $(lang_get 'MENU_UNINSTALL')${C_NC}"
-    echo -e "${C_RED}0. $(lang_g et 'MENU_EXIT')${C_NC}"
+    echo -e "${C_RED}0. $(lang_get 'MENU_EXIT')${C_NC}" # <-- FIX IS HERE
     echo ""
 }
 
 # --- Main Execution ---
 check_dependencies() {
-    for cmd in curl grep sed tar; do
+    for cmd in curl grep sed tar file; do
         if ! command -v $cmd &> /dev/null; then
             LANG_PREFIX="EN" # Use English for this critical error
             echo -e "${C_RED}$(lang_get 'DEP_MISSING' | sed "s/\${CMD}/$cmd/")${C_NC}"
