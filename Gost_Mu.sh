@@ -1,9 +1,9 @@
 #!/bin/bash
 
 #================================================================
-# Gost V3 All-in-One Helper Script (Final Version)
+# Gost V3 All-in-One Helper Script (Robust Version)
 # Repository: https://github.com/go-gost/gost
-# Features: Bilingual, Auto-detect latest version,
+# Features: Bilingual, Auto-detect latest version with manual fallback,
 #           Robust installation, Systemd service creation.
 #================================================================
 
@@ -19,7 +19,7 @@ C_YELLOW='\033[0;33m'
 C_BLUE='\033[0;34m'
 C_NC='\033[0m' # No Color
 
-# --- Language Strings (Unchanged from previous version) ---
+# --- Language Strings ---
 # English
 EN_MSG_ROOT_REQUIRED="This script must be run as root to manage systemd services."
 EN_MENU_TITLE="Gost V3 All-in-One Helper Script"
@@ -72,9 +72,12 @@ EN_UNINSTALL_STOPPING="Stopping gost service..."
 EN_UNINSTALL_REMOVING_FILES="Removing files..."
 EN_UNINSTALL_DONE="Gost has been uninstalled."
 EN_UNINSTALL_CANCELLED="Uninstallation cancelled."
-EN_ERR_FETCH_VERSION="Failed to fetch latest version info."
+EN_ERR_FETCH_VERSION="Failed to fetch latest version info automatically."
 EN_ERR_NO_ASSET="Could not find a suitable download package for your system architecture."
 EN_ERR_DOWNLOAD_INVALID="Download failed or the downloaded file is invalid."
+EN_ERR_API_RATE_LIMIT="GitHub API rate limit exceeded. Please wait a while and try again."
+EN_MANUAL_DOWNLOAD_PROMPT="Please go to https://github.com/go-gost/gost/releases/latest, copy the URL for the 'linux-${ARCH}.*.tgz' file, and paste it here (or leave empty to abort):"
+EN_DEP_CURL_MISSING="Error: 'curl' is not installed. Please install it (e.g., sudo apt install curl)."
 
 # Chinese
 ZH_MSG_ROOT_REQUIRED="此脚本需要以 root 权限运行才能管理 systemd 服务。"
@@ -128,9 +131,12 @@ ZH_UNINSTALL_STOPPING="正在停止 gost 服务..."
 ZH_UNINSTALL_REMOVING_FILES="正在删除文件..."
 ZH_UNINSTALL_DONE="Gost 已被卸载。"
 ZH_UNINSTALL_CANCELLED="已取消卸载。"
-ZH_ERR_FETCH_VERSION="获取最新版本信息失败。"
+ZH_ERR_FETCH_VERSION="自动获取最新版本信息失败。"
 ZH_ERR_NO_ASSET="未能为您的系统架构找到合适的安装包。"
 ZH_ERR_DOWNLOAD_INVALID="下载失败或下载的文件无效。"
+ZH_ERR_API_RATE_LIMIT="GitHub API 访问频率超出限制，请稍后重试。"
+ZH_MANUAL_DOWNLOAD_PROMPT="请前往 https://github.com/go-gost/gost/releases/latest, 复制 'linux-${ARCH}.*.tgz' 文件的链接并粘贴到此处 (留空则中止):"
+ZH_DEP_CURL_MISSING="错误: 未安装 'curl'。请先安装 (例如: sudo apt install curl)。"
 
 # --- Helper Functions ---
 lang_get() {
@@ -155,6 +161,11 @@ install_gost() {
         echo -e "${C_GREEN}$(lang_get 'GOST_INSTALLED')${C_NC}"
         return
     fi
+
+    if ! command -v curl &> /dev/null; then
+        echo -e "${C_RED}$(lang_get 'DEP_CURL_MISSING')${C_NC}"
+        exit 1
+    fi
     
     echo -e "${C_BLUE}$(lang_get 'GOST_NOT_FOUND')${C_NC}"
     detect_arch
@@ -162,13 +173,27 @@ install_gost() {
     echo -e "${C_YELLOW}$(lang_get 'FETCHING_LATEST')${C_NC}"
     local api_url="https://api.github.com/repos/${GOST_REPO}/releases/latest"
     
-    # Use grep and sed to parse JSON from GitHub API response
-    local download_url=$(curl -s $api_url | grep "browser_download_url.*linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/')
+    local api_response=$(curl -sSL "$api_url")
+    
+    local download_url=""
+
+    if [[ -n "$api_response" ]] && ! echo "$api_response" | grep -q "API rate limit exceeded"; then
+        download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
+    fi
     
     if [ -z "$download_url" ]; then
         echo -e "${C_RED}$(lang_get 'ERR_FETCH_VERSION')${C_NC}"
-        echo -e "${C_RED}$(lang_get 'ERR_NO_ASSET')${C_NC}"
-        exit 1
+        if echo "$api_response" | grep -q "API rate limit exceeded"; then
+            echo -e "${C_RED}$(lang_get 'ERR_API_RATE_LIMIT')${C_NC}"
+        fi
+        
+        # Manual fallback
+        read -p "$(lang_get 'MANUAL_DOWNLOAD_PROMPT' | sed "s/\${ARCH}/$ARCH/") " manual_url
+        if [ -n "$manual_url" ]; then
+            download_url="$manual_url"
+        else
+            exit 1
+        fi
     fi
     
     echo -e "${C_GREEN}$(lang_get 'DOWNLOAD_URL_FOUND')${C_NC}"
@@ -180,7 +205,6 @@ install_gost() {
         exit 1
     fi
 
-    # Verify if the downloaded file is a valid archive
     if ! file "$temp_file" | grep -q 'gzip compressed data'; then
         echo -e "${C_RED}$(lang_get 'ERR_DOWNLOAD_INVALID')${C_NC}"
         rm -f "$temp_file"
@@ -188,7 +212,6 @@ install_gost() {
     fi
     
     tar -zxf "$temp_file" -C /tmp
-    # The executable is inside a directory like 'gost-linux-amd64-3.0.1', so we find it
     find /tmp -name "gost-linux-${ARCH}*" -exec mv {} "$GOST_EXEC_PATH" \;
     chmod +x "$GOST_EXEC_PATH"
     rm -rf "$temp_file" /tmp/gost-linux-*
@@ -228,7 +251,7 @@ EOF
     echo -e "${C_YELLOW}$(lang_get 'SYSTEMD_MANAGE')${C_NC}"
 }
 
-# --- Menu Functions ---
+# --- Menu Functions and Main Execution (No changes below this line) ---
 configure_server() {
     echo -e "${C_BLUE}$(lang_get 'CONFIG_SERVER_TITLE')${C_NC}"
     install_gost
@@ -370,8 +393,7 @@ show_menu() {
 
 # --- Main Execution ---
 if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${C_RED}This script must be run as root. Please use sudo.${C_NC}"
-    echo -e "${C_RED}此脚本需要 root 权限，请使用 sudo 运行。${C_NC}"
+    echo -e "${C_RED}$(lang_get 'MSG_ROOT_REQUIRED')${C_NC}"
     exit 1
 fi
 
