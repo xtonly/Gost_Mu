@@ -1,9 +1,9 @@
 #!/bin/bash
 
 #================================================================
-# Gost V3 All-in-One Helper Script (Robust Version)
+# Gost V3 All-in-One Helper Script (Ultimate Version)
 # Repository: https://github.com/go-gost/gost
-# Features: Bilingual, Auto-detect latest version with manual fallback,
+# Features: Bilingual, Smart Downloader (API -> Proxy -> Manual),
 #           Robust installation, Systemd service creation.
 #================================================================
 
@@ -11,13 +11,15 @@
 GOST_REPO="go-gost/gost"
 GOST_EXEC_PATH="/usr/local/bin/gost"
 SYSTEMD_SERVICE_FILE="/etc/systemd/system/gost.service"
+GITHUB_API_URL="https://api.github.com/repos/${GOST_REPO}/releases/latest"
+DOWNLOAD_PROXY_URL="https://gh.api.99988866.xyz/https://github.com/${GOST_REPO}/releases/latest" # A reliable proxy for GitHub releases
 
 # --- Colors for better readability ---
 C_RED='\033[0;31m'
 C_GREEN='\033[0;32m'
 C_YELLOW='\033[0;33m'
 C_BLUE='\033[0;34m'
-C_NC='\033[0m' # No Color
+C_NC='\033[0m'
 
 # --- Language Strings ---
 # English
@@ -41,9 +43,10 @@ EN_CONFIG_SERVER_TITLE="--- Configuring Gost Server (for VPS) ---"
 EN_CONFIG_CLIENT_TITLE="--- Configuring Gost Client (for NAT Machine) ---"
 EN_GOST_INSTALLED="Gost is already installed."
 EN_GOST_NOT_FOUND="Gost not found. Attempting to download and install..."
-EN_FETCHING_LATEST="Fetching latest version info from GitHub..."
+EN_FETCHING_LATEST="[Attempt 1/2] Fetching latest version info from GitHub Official API..."
+EN_FETCHING_LATEST_PROXY="[Attempt 2/2] GitHub API failed. Trying a backup download source..."
 EN_DOWNLOAD_URL_FOUND="Found download URL:"
-EN_DOWNLOAD_FAILED="Download failed. Please check your network or GitHub API rate limits."
+EN_DOWNLOAD_FAILED="Download failed. Please check your network."
 EN_INSTALL_SUCCESS="Gost installed successfully!"
 EN_INSTALL_FAILED="Installation failed."
 EN_SYSTEMD_CREATING="Creating systemd service file..."
@@ -72,12 +75,10 @@ EN_UNINSTALL_STOPPING="Stopping gost service..."
 EN_UNINSTALL_REMOVING_FILES="Removing files..."
 EN_UNINSTALL_DONE="Gost has been uninstalled."
 EN_UNINSTALL_CANCELLED="Uninstallation cancelled."
-EN_ERR_FETCH_VERSION="Failed to fetch latest version info automatically."
-EN_ERR_NO_ASSET="Could not find a suitable download package for your system architecture."
+EN_ERR_FETCH_VERSION_FINAL="All automatic download methods have failed. This might be due to severe network restrictions."
 EN_ERR_DOWNLOAD_INVALID="Download failed or the downloaded file is invalid."
-EN_ERR_API_RATE_LIMIT="GitHub API rate limit exceeded. Please wait a while and try again."
 EN_MANUAL_DOWNLOAD_PROMPT="Please go to https://github.com/go-gost/gost/releases/latest, copy the URL for the 'linux-${ARCH}.*.tgz' file, and paste it here (or leave empty to abort):"
-EN_DEP_CURL_MISSING="Error: 'curl' is not installed. Please install it (e.g., sudo apt install curl)."
+EN_DEP_MISSING="Error: Command '${CMD}' is not installed. Please install it first."
 
 # Chinese
 ZH_MSG_ROOT_REQUIRED="此脚本需要以 root 权限运行才能管理 systemd 服务。"
@@ -100,9 +101,10 @@ ZH_CONFIG_SERVER_TITLE="--- 正在配置 Gost 服务端 (VPS) ---"
 ZH_CONFIG_CLIENT_TITLE="--- 正在配置 Gost 客户端 (NAT) ---"
 ZH_GOST_INSTALLED="Gost 已安装。"
 ZH_GOST_NOT_FOUND="未找到 Gost。正在尝试下载并安装..."
-ZH_FETCHING_LATEST="正在从 GitHub 获取最新版本信息..."
+ZH_FETCHING_LATEST="[尝试 1/2] 正在从 GitHub 官方 API 获取最新版本信息..."
+ZH_FETCHING_LATEST_PROXY="[尝试 2/2] 官方 API 连接失败。正在尝试备用下载源..."
 ZH_DOWNLOAD_URL_FOUND="已找到下载链接:"
-ZH_DOWNLOAD_FAILED="下载失败。请检查您的网络或 GitHub API 访问频率限制。"
+ZH_DOWNLOAD_FAILED="下载失败，请检查您的网络。"
 ZH_INSTALL_SUCCESS="Gost 安装成功！"
 ZH_INSTALL_FAILED="安装失败。"
 ZH_SYSTEMD_CREATING="正在创建 systemd 服务文件..."
@@ -131,12 +133,10 @@ ZH_UNINSTALL_STOPPING="正在停止 gost 服务..."
 ZH_UNINSTALL_REMOVING_FILES="正在删除文件..."
 ZH_UNINSTALL_DONE="Gost 已被卸载。"
 ZH_UNINSTALL_CANCELLED="已取消卸载。"
-ZH_ERR_FETCH_VERSION="自动获取最新版本信息失败。"
-ZH_ERR_NO_ASSET="未能为您的系统架构找到合适的安装包。"
+ZH_ERR_FETCH_VERSION_FINAL="所有自动下载方式均失败，可能是由于网络限制非常严格。"
 ZH_ERR_DOWNLOAD_INVALID="下载失败或下载的文件无效。"
-ZH_ERR_API_RATE_LIMIT="GitHub API 访问频率超出限制，请稍后重试。"
 ZH_MANUAL_DOWNLOAD_PROMPT="请前往 https://github.com/go-gost/gost/releases/latest, 复制 'linux-${ARCH}.*.tgz' 文件的链接并粘贴到此处 (留空则中止):"
-ZH_DEP_CURL_MISSING="错误: 未安装 'curl'。请先安装 (例如: sudo apt install curl)。"
+ZH_DEP_MISSING="错误: 未安装 '${CMD}' 命令，请先安装它。"
 
 # --- Helper Functions ---
 lang_get() {
@@ -156,43 +156,36 @@ detect_arch() {
     esac
 }
 
+# Smart Downloader Function
 install_gost() {
     if [ -f "$GOST_EXEC_PATH" ]; then
         echo -e "${C_GREEN}$(lang_get 'GOST_INSTALLED')${C_NC}"
         return
     fi
-
-    if ! command -v curl &> /dev/null; then
-        echo -e "${C_RED}$(lang_get 'DEP_CURL_MISSING')${C_NC}"
-        exit 1
-    fi
     
     echo -e "${C_BLUE}$(lang_get 'GOST_NOT_FOUND')${C_NC}"
     detect_arch
     
+    # Attempt 1: GitHub Official API
     echo -e "${C_YELLOW}$(lang_get 'FETCHING_LATEST')${C_NC}"
-    local api_url="https://api.github.com/repos/${GOST_REPO}/releases/latest"
+    local api_response=$(curl -sSL --connect-timeout 10 "$GITHUB_API_URL")
+    local download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
     
-    local api_response=$(curl -sSL "$api_url")
-    
-    local download_url=""
-
-    if [[ -n "$api_response" ]] && ! echo "$api_response" | grep -q "API rate limit exceeded"; then
+    # Attempt 2: Proxy Fallback
+    if [ -z "$download_url" ]; then
+        echo -e "${C_YELLOW}$(lang_get 'FETCHING_LATEST_PROXY')${C_NC}"
+        api_response=$(curl -sSL --connect-timeout 15 "$DOWNLOAD_PROXY_URL")
         download_url=$(echo "$api_response" | grep "browser_download_url" | grep "linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/' | head -n 1)
     fi
-    
+
+    # Attempt 3: Manual Fallback
     if [ -z "$download_url" ]; then
-        echo -e "${C_RED}$(lang_get 'ERR_FETCH_VERSION')${C_NC}"
-        if echo "$api_response" | grep -q "API rate limit exceeded"; then
-            echo -e "${C_RED}$(lang_get 'ERR_API_RATE_LIMIT')${C_NC}"
-        fi
-        
-        # Manual fallback
+        echo -e "${C_RED}$(lang_get 'ERR_FETCH_VERSION_FINAL')${C_NC}"
         read -p "$(lang_get 'MANUAL_DOWNLOAD_PROMPT' | sed "s/\${ARCH}/$ARCH/") " manual_url
         if [ -n "$manual_url" ]; then
             download_url="$manual_url"
         else
-            exit 1
+            exit 1 # Abort if user provides no URL
         fi
     fi
     
@@ -387,15 +380,31 @@ show_menu() {
     echo -e "${C_GREEN}6. $(lang_get 'MENU_LOG')${C_NC}"
     echo ""
     echo -e "${C_RED}7. $(lang_get 'MENU_UNINSTALL')${C_NC}"
-    echo -e "${C_RED}0. $(lang_get 'MENU_EXIT')${C_NC}"
+    echo -e "${C_RED}0. $(lang_g et 'MENU_EXIT')${C_NC}"
     echo ""
 }
 
 # --- Main Execution ---
+check_dependencies() {
+    for cmd in curl grep sed tar; do
+        if ! command -v $cmd &> /dev/null; then
+            LANG_PREFIX="EN" # Use English for this critical error
+            echo -e "${C_RED}$(lang_get 'DEP_MISSING' | sed "s/\${CMD}/$cmd/")${C_NC}"
+            LANG_PREFIX="ZH"
+            echo -e "${C_RED}$(lang_get 'DEP_MISSING' | sed "s/\${CMD}/$cmd/")${C_NC}"
+            exit 1
+        fi
+    done
+}
+
+# Check for root user
 if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${C_RED}$(lang_get 'MSG_ROOT_REQUIRED')${C_NC}"
+    echo -e "${C_RED}This script must be run as root. Please use sudo.${C_NC}"
+    echo -e "${C_RED}此脚本需要 root 权限，请使用 sudo 运行。${C_NC}"
     exit 1
 fi
+
+check_dependencies
 
 if [ -z "$LANG_PREFIX" ]; then
     echo "----------------------------------------"
