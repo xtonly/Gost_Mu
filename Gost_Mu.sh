@@ -1,14 +1,13 @@
 #!/bin/bash
 
 #================================================================
-# Gost V3 All-in-One Helper Script (Bilingual)
+# Gost V3 All-in-One Helper Script (Final Version)
 # Repository: https://github.com/go-gost/gost
-# Features: Bilingual (EN/ZH), V3 support, Auto-download,
-#           systemd service creation, interactive setup.
+# Features: Bilingual, Auto-detect latest version,
+#           Robust installation, Systemd service creation.
 #================================================================
 
 # --- Script configuration ---
-GOST_VERSION="3.0.0-rc2" # You can update this to the latest V3 version
 GOST_REPO="go-gost/gost"
 GOST_EXEC_PATH="/usr/local/bin/gost"
 SYSTEMD_SERVICE_FILE="/etc/systemd/system/gost.service"
@@ -20,7 +19,7 @@ C_YELLOW='\033[0;33m'
 C_BLUE='\033[0;34m'
 C_NC='\033[0m' # No Color
 
-# --- Language Strings ---
+# --- Language Strings (Unchanged from previous version) ---
 # English
 EN_MSG_ROOT_REQUIRED="This script must be run as root to manage systemd services."
 EN_MENU_TITLE="Gost V3 All-in-One Helper Script"
@@ -42,8 +41,9 @@ EN_CONFIG_SERVER_TITLE="--- Configuring Gost Server (for VPS) ---"
 EN_CONFIG_CLIENT_TITLE="--- Configuring Gost Client (for NAT Machine) ---"
 EN_GOST_INSTALLED="Gost is already installed."
 EN_GOST_NOT_FOUND="Gost not found. Attempting to download and install..."
-EN_DOWNLOAD_FROM="Downloading from:"
-EN_DOWNLOAD_FAILED="Download failed. Please check the URL or your network."
+EN_FETCHING_LATEST="Fetching latest version info from GitHub..."
+EN_DOWNLOAD_URL_FOUND="Found download URL:"
+EN_DOWNLOAD_FAILED="Download failed. Please check your network or GitHub API rate limits."
 EN_INSTALL_SUCCESS="Gost installed successfully!"
 EN_INSTALL_FAILED="Installation failed."
 EN_SYSTEMD_CREATING="Creating systemd service file..."
@@ -72,6 +72,9 @@ EN_UNINSTALL_STOPPING="Stopping gost service..."
 EN_UNINSTALL_REMOVING_FILES="Removing files..."
 EN_UNINSTALL_DONE="Gost has been uninstalled."
 EN_UNINSTALL_CANCELLED="Uninstallation cancelled."
+EN_ERR_FETCH_VERSION="Failed to fetch latest version info."
+EN_ERR_NO_ASSET="Could not find a suitable download package for your system architecture."
+EN_ERR_DOWNLOAD_INVALID="Download failed or the downloaded file is invalid."
 
 # Chinese
 ZH_MSG_ROOT_REQUIRED="此脚本需要以 root 权限运行才能管理 systemd 服务。"
@@ -94,8 +97,9 @@ ZH_CONFIG_SERVER_TITLE="--- 正在配置 Gost 服务端 (VPS) ---"
 ZH_CONFIG_CLIENT_TITLE="--- 正在配置 Gost 客户端 (NAT) ---"
 ZH_GOST_INSTALLED="Gost 已安装。"
 ZH_GOST_NOT_FOUND="未找到 Gost。正在尝试下载并安装..."
-ZH_DOWNLOAD_FROM="下载地址:"
-ZH_DOWNLOAD_FAILED="下载失败。请检查 URL 或您的网络连接。"
+ZH_FETCHING_LATEST="正在从 GitHub 获取最新版本信息..."
+ZH_DOWNLOAD_URL_FOUND="已找到下载链接:"
+ZH_DOWNLOAD_FAILED="下载失败。请检查您的网络或 GitHub API 访问频率限制。"
 ZH_INSTALL_SUCCESS="Gost 安装成功！"
 ZH_INSTALL_FAILED="安装失败。"
 ZH_SYSTEMD_CREATING="正在创建 systemd 服务文件..."
@@ -124,18 +128,14 @@ ZH_UNINSTALL_STOPPING="正在停止 gost 服务..."
 ZH_UNINSTALL_REMOVING_FILES="正在删除文件..."
 ZH_UNINSTALL_DONE="Gost 已被卸载。"
 ZH_UNINSTALL_CANCELLED="已取消卸载。"
+ZH_ERR_FETCH_VERSION="获取最新版本信息失败。"
+ZH_ERR_NO_ASSET="未能为您的系统架构找到合适的安装包。"
+ZH_ERR_DOWNLOAD_INVALID="下载失败或下载的文件无效。"
 
 # --- Helper Functions ---
-# Usage: lang_get MSG_KEY
 lang_get() {
     local key="${LANG_PREFIX}_$1"
     echo -e "${!key}"
-}
-
-print_msg() {
-    local color="$1"
-    local key="$2"
-    echo -e "${color}$(lang_get "$key")${C_NC}"
 }
 
 detect_arch() {
@@ -144,7 +144,7 @@ detect_arch() {
         x86_64) ARCH="amd64" ;;
         aarch64) ARCH="arm64" ;;
         *)
-            print_msg "$C_RED" "Error: Unsupported architecture: $ARCH. Exiting."
+            echo -e "${C_RED}Unsupported architecture: $ARCH. Exiting.${C_NC}"
             exit 1
             ;;
     esac
@@ -152,38 +152,58 @@ detect_arch() {
 
 install_gost() {
     if [ -f "$GOST_EXEC_PATH" ]; then
-        print_msg "$C_GREEN" "GOST_INSTALLED"
+        echo -e "${C_GREEN}$(lang_get 'GOST_INSTALLED')${C_NC}"
         return
     fi
     
-    print_msg "$C_BLUE" "GOST_NOT_FOUND"
+    echo -e "${C_BLUE}$(lang_get 'GOST_NOT_FOUND')${C_NC}"
     detect_arch
-    local download_url="https://github.com/${GOST_REPO}/releases/download/v${GOST_VERSION}/gost-linux-${ARCH}-${GOST_VERSION}.tgz"
     
-    print_msg "$C_YELLOW" "$(lang_get 'DOWNLOAD_FROM') $download_url"
+    echo -e "${C_YELLOW}$(lang_get 'FETCHING_LATEST')${C_NC}"
+    local api_url="https://api.github.com/repos/${GOST_REPO}/releases/latest"
     
-    if ! curl -sSL -o /tmp/gost.tgz "$download_url"; then
-        print_msg "$C_RED" "DOWNLOAD_FAILED"
+    # Use grep and sed to parse JSON from GitHub API response
+    local download_url=$(curl -s $api_url | grep "browser_download_url.*linux-${ARCH}.*.tgz" | sed -E 's/.*"browser_download_url": "(.*)".*/\1/')
+    
+    if [ -z "$download_url" ]; then
+        echo -e "${C_RED}$(lang_get 'ERR_FETCH_VERSION')${C_NC}"
+        echo -e "${C_RED}$(lang_get 'ERR_NO_ASSET')${C_NC}"
         exit 1
     fi
     
-    tar -zxf /tmp/gost.tgz -C /tmp
-    # Find the executable in the extracted folder and move it
-    find /tmp -name "gost-linux-${ARCH}" -exec mv {} "$GOST_EXEC_PATH" \;
+    echo -e "${C_GREEN}$(lang_get 'DOWNLOAD_URL_FOUND')${C_NC}"
+    echo "$download_url"
+    
+    local temp_file="/tmp/gost.tgz"
+    if ! curl -sSL -o "$temp_file" "$download_url"; then
+        echo -e "${C_RED}$(lang_get 'DOWNLOAD_FAILED')${C_NC}"
+        exit 1
+    fi
+
+    # Verify if the downloaded file is a valid archive
+    if ! file "$temp_file" | grep -q 'gzip compressed data'; then
+        echo -e "${C_RED}$(lang_get 'ERR_DOWNLOAD_INVALID')${C_NC}"
+        rm -f "$temp_file"
+        exit 1
+    fi
+    
+    tar -zxf "$temp_file" -C /tmp
+    # The executable is inside a directory like 'gost-linux-amd64-3.0.1', so we find it
+    find /tmp -name "gost-linux-${ARCH}*" -exec mv {} "$GOST_EXEC_PATH" \;
     chmod +x "$GOST_EXEC_PATH"
-    rm -rf /tmp/gost.tgz /tmp/gost-linux-*
+    rm -rf "$temp_file" /tmp/gost-linux-*
     
     if [ -f "$GOST_EXEC_PATH" ]; then
-        print_msg "$C_GREEN" "INSTALL_SUCCESS"
+        echo -e "${C_GREEN}$(lang_get 'INSTALL_SUCCESS')${C_NC}"
     else
-        print_msg "$C_RED" "INSTALL_FAILED"
+        echo -e "${C_RED}$(lang_get 'INSTALL_FAILED')${C_NC}"
         exit 1
     fi
 }
 
 create_systemd_service() {
     local exec_command="$1"
-    print_msg "$C_BLUE" "SYSTEMD_CREATING"
+    echo -e "${C_BLUE}$(lang_get 'SYSTEMD_CREATING')${C_NC}"
     
     cat > "$SYSTEMD_SERVICE_FILE" << EOF
 [Unit]
@@ -204,13 +224,13 @@ EOF
 
     systemctl daemon-reload
     systemctl enable gost
-    print_msg "$C_GREEN" "SYSTEMD_SUCCESS"
-    print_msg "$C_YELLOW" "SYSTEMD_MANAGE"
+    echo -e "${C_GREEN}$(lang_get 'SYSTEMD_SUCCESS')${C_NC}"
+    echo -e "${C_YELLOW}$(lang_get 'SYSTEMD_MANAGE')${C_NC}"
 }
 
 # --- Menu Functions ---
 configure_server() {
-    print_msg "$C_BLUE" "CONFIG_SERVER_TITLE"
+    echo -e "${C_BLUE}$(lang_get 'CONFIG_SERVER_TITLE')${C_NC}"
     install_gost
     
     read -p "$(lang_get 'PROMPT_LISTEN_PORT') " LISTEN_PORT
@@ -226,32 +246,32 @@ configure_server() {
     create_systemd_service "$command"
     
     local public_ip=$(curl -s4 ip.sb || wget -qO- -t1 -T2 ipv4.icanhazip.com)
-    print_msg "$C_GREEN" "\n$(lang_get 'CONFIG_SERVER_DONE')"
-    echo "--------------------------------------------------"
-    print_msg "$C_YELLOW" "$(lang_get 'CONFIG_CLIENT_GUIDE')"
-    print_msg "$C_BLUE" "$(lang_get 'INFO_VPS_IP') $public_ip"
-    print_msg "$C_BLUE" "$(lang_get 'INFO_VPS_PORT')  $LISTEN_PORT"
-    print_msg "$C_BLUE" "$(lang_get 'INFO_PASSWORD')       $AUTH_PASS"
-    echo "--------------------------------------------------"
+    echo -e "\n${C_GREEN}$(lang_get 'CONFIG_SERVER_DONE')${C_NC}"
+    echo -e "${C_YELLOW}--------------------------------------------------${C_NC}"
+    echo -e "${C_YELLOW}$(lang_get 'CONFIG_CLIENT_GUIDE')${C_NC}"
+    echo -e "${C_BLUE}$(lang_get 'INFO_VPS_IP') $public_ip${C_NC}"
+    echo -e "${C_BLUE}$(lang_get 'INFO_VPS_PORT')  $LISTEN_PORT${C_NC}"
+    echo -e "${C_BLUE}$(lang_get 'INFO_PASSWORD')       $AUTH_PASS${C_NC}"
+    echo -e "${C_YELLOW}--------------------------------------------------${C_NC}"
     
     read -p "$(lang_get 'PROMPT_START_NOW') " start_now
     if [[ "$start_now" == "y" || "$start_now" == "Y" ]]; then
         systemctl start gost
-        print_msg "$C_GREEN" "SERVICE_STARTED"
+        echo -e "${C_GREEN}$(lang_get 'SERVICE_STARTED')${C_NC}"
         sleep 1; systemctl status gost --no-pager
     fi
 }
 
 configure_client() {
-    print_msg "$C_BLUE" "CONFIG_CLIENT_TITLE"
+    echo -e "${C_BLUE}$(lang_get 'CONFIG_CLIENT_TITLE')${C_NC}"
     install_gost
 
     read -p "$(lang_get 'PROMPT_VPS_IP') " SERVER_IP
     read -p "$(lang_get 'PROMPT_VPS_PORT') " SERVER_PORT
     read -p "$(lang_get 'PROMPT_PASSWORD') " AUTH_PASS
     
-    print_msg "$C_YELLOW" "\n$(lang_get 'PROMPT_PORT_RANGES')"
-    print_msg "$C_YELLOW" "$(lang_get 'PROMPT_PORT_EXAMPLE')"
+    echo -e "\n${C_YELLOW}$(lang_get 'PROMPT_PORT_RANGES')${C_NC}"
+    echo -e "${C_YELLOW}$(lang_get 'PROMPT_PORT_EXAMPLE')${C_NC}"
     read -p "$(lang_get 'PROMPT_LOCAL_RANGE') " LOCAL_PORTS_RANGE
     read -p "$(lang_get 'PROMPT_REMOTE_RANGE') " REMOTE_PORTS_RANGE
 
@@ -261,7 +281,7 @@ configure_client() {
     local remote_end=$(echo $REMOTE_PORTS_RANGE | cut -d'-' -f2)
 
     if [ $((local_end - local_start)) -ne $((remote_end - remote_start)) ]; then
-        print_msg "$C_RED" "ERR_RANGE_MISMATCH"
+        echo -e "${C_RED}$(lang_get 'ERR_RANGE_MISMATCH')${C_NC}"
         exit 1
     fi
 
@@ -281,39 +301,39 @@ configure_client() {
     local command="$GOST_EXEC_PATH -F rtun://$auth_str$SERVER_IP:$SERVER_PORT$forward_chain"
     create_systemd_service "$command"
 
-    print_msg "$C_GREEN" "\n$(lang_get 'CONFIG_CLIENT_DONE')"
+    echo -e "\n${C_GREEN}$(lang_get 'CONFIG_CLIENT_DONE')${C_NC}"
     read -p "$(lang_get 'PROMPT_START_NOW') " start_now
     if [[ "$start_now" == "y" || "$start_now" == "Y" ]]; then
         systemctl start gost
-        print_msg "$C_GREEN" "SERVICE_STARTED"
+        echo -e "${C_GREEN}$(lang_get 'SERVICE_STARTED')${C_NC}"
         sleep 1; systemctl status gost --no-pager
     fi
 }
 
 uninstall_gost() {
     if [ ! -f "$GOST_EXEC_PATH" ] && [ ! -f "$SYSTEMD_SERVICE_FILE" ]; then
-        print_msg "$C_YELLOW" "Gost is not installed."
+        echo -e "${C_YELLOW}Gost is not installed.${C_NC}"
         return
     fi
     read -p "$(lang_get 'UNINSTALL_CONFIRM') " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        print_msg "$C_YELLOW" "UNINSTALL_CANCELLED"
+        echo -e "${C_YELLOW}$(lang_get 'UNINSTALL_CANCELLED')${C_NC}"
         return
     fi
-    print_msg "$C_YELLOW" "UNINSTALL_STOPPING"
+    echo -e "${C_YELLOW}$(lang_get 'UNINSTALL_STOPPING')${C_NC}"
     systemctl stop gost
     systemctl disable gost
-    print_msg "$C_YELLOW" "UNINSTALL_REMOVING_FILES"
+    echo -e "${C_YELLOW}$(lang_get 'UNINSTALL_REMOVING_FILES')${C_NC}"
     rm -f "$SYSTEMD_SERVICE_FILE"
     rm -f "$GOST_EXEC_PATH"
     systemctl daemon-reload
-    print_msg "$C_GREEN" "UNINSTALL_DONE"
+    echo -e "${C_GREEN}$(lang_get 'UNINSTALL_DONE')${C_NC}"
 }
 
 manage_service() {
     local action=$1
     if [ ! -f "$SYSTEMD_SERVICE_FILE" ]; then
-        print_msg "$C_RED" "SERVICE_NOT_CONFIGURED"
+        echo -e "${C_RED}$(lang_get 'SERVICE_NOT_CONFIGURED')${C_NC}"
         return
     fi
     case $action in
@@ -329,15 +349,15 @@ manage_service() {
 
 show_menu() {
     clear
-    print_msg "$C_BLUE" "======================================="
-    print_msg "$C_BLUE" "   $(lang_get 'MENU_TITLE')   "
-    print_msg "$C_BLUE" "======================================="
+    echo -e "${C_BLUE}=======================================${C_NC}"
+    echo -e "${C_BLUE}   $(lang_get 'MENU_TITLE')   ${C_NC}"
+    echo -e "${C_BLUE}=======================================${C_NC}"
     echo ""
-    print_msg "$C_YELLOW" "$(lang_get 'MENU_SETUP')"
+    echo -e "${C_YELLOW}$(lang_get 'MENU_SETUP')${C_NC}"
     echo -e "${C_GREEN}1. $(lang_get 'MENU_VPS')${C_NC}"
     echo -e "${C_GREEN}2. $(lang_get 'MENU_NAT')${C_NC}"
     echo ""
-    print_msg "$C_YELLOW" "$(lang_get 'MENU_MANAGE')"
+    echo -e "${C_YELLOW}$(lang_get 'MENU_MANAGE')${C_NC}"
     echo -e "${C_GREEN}3. $(lang_get 'MENU_START')${C_NC}"
     echo -e "${C_GREEN}4. $(lang_get 'MENU_STOP')${C_NC}"
     echo -e "${C_GREEN}5. $(lang_get 'MENU_STATUS')${C_NC}"
@@ -349,14 +369,12 @@ show_menu() {
 }
 
 # --- Main Execution ---
-# Check for root user
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${C_RED}This script must be run as root. Please use sudo.${C_NC}"
     echo -e "${C_RED}此脚本需要 root 权限，请使用 sudo 运行。${C_NC}"
     exit 1
 fi
 
-# Language Selection
 if [ -z "$LANG_PREFIX" ]; then
     echo "----------------------------------------"
     echo "Please select a language / 请选择语言:"
@@ -384,7 +402,7 @@ while true; do
         6) manage_service "log" ;;
         7) uninstall_gost ;;
         0) break ;;
-        *) print_msg "$C_RED" "MSG_INVALID_OPTION" ;;
+        *) echo -e "${C_RED}$(lang_get 'MSG_INVALID_OPTION')${C_NC}" ;;
     esac
     
     if [ "$choice" != "0" ]; then
@@ -392,4 +410,4 @@ while true; do
     fi
 done
 
-print_msg "$C_GREEN" "MSG_GOODBYE"
+echo -e "${C_GREEN}$(lang_get 'MSG_GOODBYE')${C_NC}"
